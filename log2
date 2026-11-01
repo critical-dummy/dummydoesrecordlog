@@ -1,0 +1,2071 @@
+/content/DiffSinger
+
+======================================================================
+FILE: docs/GettingStarted.md
+======================================================================
+# Getting Started
+
+## Installation
+
+### Environments and dependencies
+
+DiffSinger requires Python 3.10 or later. We strongly recommend you create a virtual environment via Conda, venv or uv before installing dependencies.
+
+1. Install the latest PyTorch following the [official instructions](https://pytorch.org/get-started/locally/) according to your OS and hardware. We recommend using a stable release >= 2.4.0.
+
+2. Install other dependencies via the following command:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+### Concepts and materials
+
+Before you proceed, it is necessary to understand some fundamental concepts in this repository and prepare some materials and assets. See [fundamental concepts and materials](BestPractices.md#fundamental-concepts-and-materials) for detailed information.
+
+## Configuration
+
+Every model needs a configuration file to run preprocessing, training, inference and deployment. Templates of configuration files are in [configs/templates](../configs/templates). Please **copy** the templates to your own data directory before you edit them.
+
+Before you continue, it is highly recommended to read through [Best Practices](BestPractices.md), which is a more detailed tutorial on how to configure your experiments.
+
+For more details about configurable parameters, see [Configuration Schemas](ConfigurationSchemas.md).
+
+> [!TIP]
+> To see which parameters are required or recommended to be edited, you can search by _customizability_ in the configuration schemas.
+
+## Preprocessing
+
+Raw data pieces and transcriptions should be binarized into dataset files before training. Before doing this step, please ensure all required configurations like `raw_data_dir` and `binary_data_dir` are set properly, and all your desired functionalities and features are enabled and configured.
+
+Assume that you have a configuration file called `my_config.yaml`. Run:
+
+```bash
+python scripts/binarize.py --config my_config.yaml
+```
+
+Preprocessing can be accelerated through multiprocessing. See [binarization_args.num_workers](ConfigurationSchemas.md#binarization_argsnum_workers) for more explanations.
+
+## Training
+
+Assume that you have a configuration file called `my_config.yaml` and the name of your model is `my_experiment`. Run:
+
+```bash
+python scripts/train.py --config my_config.yaml --exp_name my_experiment --reset
+```
+
+Checkpoints will be saved at the `checkpoints/my_experiment/` directory. When interrupting the program and running the above command again, the training resumes automatically from the latest checkpoint.
+
+For more suggestions related to training performance, see [performance tuning](BestPractices.md#performance-tuning).
+
+### TensorBoard
+
+Run the following command to start TensorBoard:
+
+```bash
+tensorboard --logdir checkpoints/
+```
+
+> [!NOTE]
+> If you are training a model with multiple GPUs (DDP), please add the `--reload_multifile=true` option when launching TensorBoard, otherwise it may not update properly.
+
+## Inference
+
+Inference of DiffSinger is based on DS files. Assume that you have a DS file named `my_song.ds` and your model is named `my_experiment`.
+
+If your model is a variance model, run:
+
+```bash
+python scripts/infer.py variance my_song.ds --exp my_experiment
+```
+
+or run
+
+```bash
+python scripts/infer.py variance --help
+```
+
+for more configurable options.
+
+If your model is an acoustic model, run:
+
+```bash
+python scripts/infer.py acoustic my_song.ds --exp my_experiment
+```
+
+or run
+
+```bash
+python scripts/infer.py acoustic --help
+```
+
+for more configurable options.
+
+## Deployment
+
+DiffSinger uses [ONNX](https://onnx.ai/) as the deployment format.
+
+Assume that you have a model named `my_experiment`.
+
+If your model is a variance model, run:
+
+```bash
+python scripts/export.py variance --exp my_experiment
+```
+
+or run
+
+```bash
+python scripts/export.py variance --help
+```
+
+for more configurable options.
+
+If your model is an acoustic model, run:
+
+```bash
+python scripts/export.py acoustic --exp my_experiment
+```
+
+or run
+
+```bash
+python scripts/export.py acoustic --help
+```
+
+for more configurable options.
+
+To export an NSF-HiFiGAN vocoder checkpoint, run:
+
+```bash
+python scripts/export.py nsf-hifigan --config CONFIG --ckpt CKPT
+```
+
+where `CONFIG` is a configuration file that configures the same mel parameters as the vocoder (can be `configs/acoustic.yaml` for most cases) and `CKPT` is the path of the checkpoint to be exported. `--ckpt` is optional; if it is omitted, the checkpoint path is read from `vocoder_ckpt` in `CONFIG`.
+
+For more configurable options, run
+
+```bash
+python scripts/export.py nsf-hifigan --help
+```
+
+## Other utilities
+
+There are other useful CLI tools in the [scripts/](../scripts) directory not mentioned above:
+
+- `drop_spk.py` - drop speaker embeddings from a checkpoint and save as a new one, refilling the dropped embeddings with zeros (by default) or other values (for data security reasons when distributing models)
+- `vocode.py` - bypass the acoustic model and only run the vocoder on given mel-spectrograms
+
+
+======================================================================
+FILE: docs/BestPractices.md
+======================================================================
+# Best Practices
+
+## Fundamental concepts and materials
+
+### Configuration files
+
+A configuration file is a YAML file that defines enabled features, model hyperparameters and controls the behavior of the binarizer, trainer and inference. Almost all settings and controls in this repository, including the practices in this guidance, are achieved through configuration files.
+
+For more information about the configuration system and configurable attributes, see [Configuration Schemas](ConfigurationSchemas.md).
+
+### Languages
+
+Each language you are dealing with should have a unique tag in the configuration file. **We highly recommend using ISO 639 language codes as language tags.** For example, `zh` and `zho` stand for Chinese (`cmn` specifically for Mandarin Chinese), `ja` and `jpn` for Japanese, `en` and `eng` for English, `yue` for Cantonese (Yue). You can download a complete language code table from https://iso639-3.sil.org/code_tables/download_tables.
+
+### Phonemes
+
+Phonemes are the fundamental part of dictionaries and labels. There are two types of phonemes: language-specific phonemes and global phonemes.
+
+**Language-specific phonemes:** If there are multiple languages, all language-specific phonemes will be prefixed with their language name. For example: `zh/a`, `ja/o`, `en/eh`. These are called the **full name** of the phonemes, while `a`, `o`, `eh` are called the **short name** which has definite meaning only in a specific language context. If there is only one language, the short names can be used to determine each phoneme.
+
+**Global phonemes:** Some phonemes do not belong to any language. There are two reserved global phoneme tags: `SP` for space, and `AP` for aspiration. There can also be other user-defined tags (`EP`, `GS`, `VF`, etc.). These tags will not be prefixed with a language tag, and are prior when identifying phoneme names.
+
+Extra phonemes, including user-defined global phonemes and additional language-specific phonemes that are not present in the dictionaries, can be defined in a list in the configuration file (full names should be used):
+
+```yaml
+extra_phonemes: ['EP', 'ja/cl']
+```
+
+The phoneme set expands rapidly with the number of languages. There are actually many similar phonemes that can be merged. Define the merging groups in your configuration file (full names should be used):
+
+```yaml
+merged_phoneme_groups:
+  - [zh/i, ja/i, en/iy]
+  - [zh/s, ja/s, en/s]
+  - [ja/cl, SP]  # global phonemes can also be merged
+  # ... (other groups omitted for brevity)
+use_lang_id: true  # whether to use language embedding; only takes effect if there are cross-lingual phonemes
+```
+
+Merging phonemes does not mean that they are exactly the same for the dictionary. For those cross-lingual merged phonemes, setting `use_lang_id` to true will still distinguish them by language IDs.
+
+#### Phoneme naming principles
+
+- Short names of language-specific phonemes should not conflict with global phoneme names, including reserved ones.
+- `/` cannot be used because it is already used for splitting the language tag and the short name.
+- `-` and `+` cannot be used because they are defined as slur tags in most singing voice synthesis editors.
+- Other special characters, including but not limited to `@`, `#`, `&`, `|`, `<`, `>`, are not recommended because they may be used as special tags in the future format changes.
+- ASCII characters are preferred for the best encoding compatibility, but all UTF-8 characters are acceptable.
+
+### Dictionaries
+
+Each language should have a corresponding dictionary. Define languages and dictionaries in your configuration file:
+
+```yaml
+dictionaries:
+  zh: dictionaries/opencpop-extension.txt
+  ja: dictionaries/japanese_dict_full.txt
+  en: dictionaries/ds_cmudict-07b.txt
+num_lang: 3  # number of languages; should be >= number of defined languages
+```
+
+Each dictionary is a *.txt* file, in which each line represents a mapping rule from one syllable to its phoneme sequence. The syllable and the phonemes are split by `tab`, and the phonemes are split by `space`:
+
+```
+<syllable>	<phoneme1> <phoneme2> ...
+```
+
+#### Syllable naming principles
+
+- Try to use a standard writing or pronouncing system. For example, pinyin for Mandarin Chinese, romaji for Japanese and English words for English.
+- `AP` and `SP` cannot be used because they are reserved tags when using DiffSinger in editors.
+- `/` cannot be used because it is already used for splitting the language tag and the short name.
+- `-` and `+` cannot be used because they are defined as slur tags in most singing voice synthesis editors.
+- Syllable names are not recommended to start with `.` because this may have special meanings in the future editors.
+- Other special characters, including but not limited to `@`, `#`, `&`, `|`, `<`, `>`, are not recommended because they may be used as special tags in the future format changes.
+- ASCII characters are preferred for the best encoding compatibility, but all UTF-8 characters are acceptable.
+
+There are some example dictionaries in the [dictionaries/](../dictionaries) folder.
+
+### Datasets
+
+A dataset mainly includes recordings and transcriptions, which is called a _raw dataset_. Raw datasets should be organized as the following folder structure:
+
+- my_raw_data/
+  - wavs/
+    - 001.wav
+    - 002.wav
+    - ... (more recording files)
+  - transcriptions.csv
+
+In the example above, the _my_raw_data_ directory is the root directory of a raw dataset.
+
+The _transcriptions.csv_ file contains all labels of the recordings. The common column of the CSV file is `name`, which represents all recording items by their filenames **without extension**. Elements of sequence attributes should be split by `space`. Other required columns may vary according to the category of the model you are training, and will be introduced in the following sections.
+
+Each dataset should have a main language. If you have many recordings in multiple languages, it is recommended to separate them by language (you can merge their speaker IDs in the configuration). In each dataset, the main language is set as the language context, and phoneme labels in transcriptions.csv do not need a prefix (short name). It is also valid if there are phonemes from other languages, but all of them should be prefixed with their actual language (full name). Global phonemes should not be prefixed in any datasets.
+
+You can define your datasets in the configuration file like this:
+
+```yaml
+datasets:  # define all raw datasets
+  - raw_data_dir: data/spk1-zh/raw  # path to the root of a raw dataset
+    speaker: speaker1  # speaker name
+    spk_id: 0  # optional; use this to merge two datasets; otherwise automatically assigned
+    language: zh  # language tag (main language) of this dataset
+    test_prefixes:  # optional; validation samples from this dataset
+      - wav1
+      - wav2
+  - raw_data_dir: data/spk1-en/raw
+    speaker: speaker1
+    spk_id: 0  # specify the same speaker ID to merge into the previous one
+    language: en
+    test_prefixes:
+      - wav1
+      - wav2
+  - raw_data_dir: data/spk2/raw
+    speaker: speaker2
+    language: ja
+    test_prefixes:
+      - wav1
+      - wav2
+  # ... (other datasets omitted for brevity)
+num_spk: 2  # number of speakers; should be > maximum speaker ID
+```
+
+### DS files
+
+DS files are JSON files with _.ds_ suffix that contain phoneme sequence, phoneme durations, music scores or curve parameters. They are mainly used to run inference on models for test and evaluation purposes, and they can be used as training data in some cases. There are some example DS files in the [samples/](../samples) folder.
+
+The current recommended way of using a model for production purposes is to use [OpenUTAU for DiffSinger](https://github.com/stakira/OpenUtau). It can export DS files as well.
+
+### Other fundamental assets
+
+#### Vocoders
+
+A vocoder is a model that can reconstruct the audio waveform given the low-dimensional mel-spectrogram. The vocoder is the essential dependency if you want to train an acoustic model and hear the voice on TensorBoard.
+
+The [DiffSinger Community Vocoders Project](https://openvpi.github.io/vocoders) provides a universal pre-trained NSF-HiFiGAN vocoder that can be used for starters of this repository. To use it, download the model (~50 MB size) from its releases and unzip it into the `checkpoints/` folder.
+
+The pre-trained vocoder can be fine-tuned on your target dataset. It is highly recommended to do so because fine-tuned vocoder can generate much better results on specific (seen) datasets while not requiring much computing resources. See the [vocoder training and fine-tuning repository](https://github.com/openvpi/SingingVocoders) for detailed instructions. After you get the fine-tuned vocoder checkpoint, you can configure it by `vocoder_ckpt` key in your configuration file. The fine-tuned NSF-HiFiGAN vocoder checkpoints can be exported to ONNX format like other DiffSinger user models for further production purposes.
+
+Another unrecommended option: train an ultra-lightweight [DDSP vocoder](https://github.com/yxlllc/pc-ddsp) first by yourself, then configure it according to the relevant [instructions](https://github.com/yxlllc/pc-ddsp/blob/master/DiffSinger.md).
+
+#### Feature extractors or auxiliary models
+
+RMVPE is the recommended pitch extractor of this repository, which is an NN-based algorithm and requires a pre-trained model. For more information about pitch extractors and how to configure them, see [feature extraction](#pitch-extraction).
+
+Vocal Remover (VR) is the recommended harmonic-noise separator of this repository, which is an NN-based algorithm and requires a pre-trained model. For more information about harmonic-noise separators and how to configure them, see [feature extraction](#harmonic-noise-separation).
+
+## Overview: training acoustic models
+
+An acoustic model takes low-level singing information as input, including (but not limited to) phoneme sequence, phoneme durations and F0 sequence. The only output of an acoustic model is the mel-spectrogram, which can be converted to waveform (the final audio) through the vocoder. Briefly speaking, an acoustic model takes in all features that are explicitly given, and produces the singing voice.
+
+### Datasets
+
+To train an acoustic model, you must have three columns in your transcriptions.csv: `name`, `ph_seq` and `ph_dur`, where `ph_seq` is the phoneme sequence and `ph_dur` is the phoneme duration sequence in seconds. You must have all corresponding recordings declared by the `name` column placed in the `wavs` folder, in WAV or FLAC format (`.wav` takes precedence if both exist). Although not mandatory, it is recommended to prepare all recordings in mono.
+
+Training from multiple datasets in one model (so that the model is a multi-speaker model) is supported. See `datasets[].speaker`, `datasets[].spk_id`, `num_spk` and `use_spk_id` in the configuration schemas.
+
+### Functionalities
+
+Functionalities of acoustic models are defined by their inputs. Acoustic models have three basic and fixed inputs: phoneme sequence, phoneme duration sequence and F0 (pitch) sequence. There are three categories of additional inputs (control parameters):
+
+- speaker IDs: if your acoustic model is a multi-speaker model, you can use different speakers in the same model, or mix their timbre and style.
+- variance parameters: these curve parameters are features extracted from the recordings, and can control the timbre and style of the singing voice. See `use_energy_embed` and `use_breathiness_embed` in the configuration schemas. Please note that variance parameters **do not have default values**, so they are usually obtained from the variance model at inference time.
+- transition parameters: these values represent the transition of the mel-spectrogram, and are obtained by enabling data augmentation. They are scalars at training time and sequences at inference time. See `augmentation_args`, `use_key_shift_embed` and `use_speed_embed` in the configuration schemas.
+
+## Overview: training variance models
+
+A variance model takes high-level music information as input, including phoneme sequence, word division, word durations and music scores. The outputs of a variance model may include phoneme durations, pitch curve and other control parameters that will be consumed by acoustic models. Briefly speaking, a variance model works as an auxiliary tool (so-called _automatic parameter generator_) for the acoustic models.
+
+### Datasets
+
+To train a variance model, you must have all the required attributes listed in the following table in your transcriptions.csv according to the functionalities enabled.
+
+|                                | name | ph_seq | ph_dur | ph_num | note_seq | note_dur |
+|:------------------------------:|:----:|:------:|:------:|:------:|:--------:|:--------:|
+|  phoneme duration prediction   |  ✓   |   ✓    |   ✓    |   ✓    |          |          |
+|        pitch prediction        |  ✓   |   ✓    |   ✓    |        |    ✓     |    ✓     |
+| variance parameters prediction |  ✓   |   ✓    |   ✓    |        |          |          |
+
+The recommended way of building a variance dataset is to extend an acoustic dataset. You may have all the recordings prepared like the acoustic dataset as well, or [use DS files in your variance datasets](#build-variance-datasets-with-ds-files).
+
+Variance models support multi-speaker settings like acoustic models do.
+
+### Functionalities
+
+Functionalities of variance models are defined by their outputs. There are three main prediction modules that can be enabled/disabled independently:
+
+- Duration Predictor: predicts the phoneme durations. See `predict_dur` in the configuration schemas.
+- Pitch Predictor: predicts the pitch curve. See `predict_pitch` in the configuration schemas.
+- Multi-Variance Predictor: jointly predicts other variance parameters. See `predict_energy` and `predict_breathiness` in the configuration schemas.
+
+There may be some mutual influence between the modules above w
+
+======================================================================
+FILE: docs/ConfigurationSchemas.md
+======================================================================
+# Configuration Schemas
+
+## The configuration system
+
+DiffSinger uses a cascading configuration system based on YAML files. Inheritance is completely explicit: a configuration file inherits from other files by listing them in its `base_config` attribute. Sources are applied in the following order, with later sources overriding earlier ones:
+
+1. **The `base_config` chain** (from `--config`): base files are loaded depth-first, and configurations are merged recursively: when the overriding value is a mapping and the key already exists in the inherited configuration, it is merged key by key into the existing mapping instead of replacing the whole mapping; non-mapping values (scalars, lists, etc.) simply replace whatever was there before. Keys that exist in only one configuration are kept. All configurations in the inheritance chain are squashed as the final configuration of this source.
+2. **The saved experiment configuration**: when `--exp_name` is given, the final configuration is saved to `checkpoints/<exp_name>/config.yaml` (with `base_config` emptied), which is detached from the chain and independent of other configuration files. When the same `--exp_name` is used again (e.g., when resuming training), every key present in the saved file replaces the chain's value wholesale, including nested mappings, while keys that exist only in the chain are kept. Pass `--reset` to discard the saved configuration and rebuild it from `--config` (the rebuilt configuration is then saved again).
+3. **Command-line overrides** (from `--hparams key=value,key=value`): applied last, taking precedence over both sources above. The argument string is split on `,` and then on `=`, so values must not contain either character. The override syntax addresses top-level keys only (it does not interpret dotted paths). For an existing key, conversion is only reliable for scalar values whose current type is `bool`, `int`, `float` or `str`; list/mapping values and `None` are not reliably convertible. Boolean overrides currently require Python's `True`/`False` spellings, and the parser uses `eval()` for overrides, so do not use it with untrusted input.
+
+The final configuration is saved to the experiment directory at startup only when `checkpoints/<exp_name>/config.yaml` does not exist yet or `--reset` is given; resuming an existing experiment does *not* re-save it. The saving step is skipped when `--infer` is given, which also marks the run as inference (`hparams['infer']` set to `true`). Only the main process performs the saving.
+
+## Configurable parameters
+
+The following are the meanings and usages of all editable keys in a configuration file.
+
+Each configuration key (including nested keys) is described with a brief explanation and several attributes listed as follows:
+
+| Attribute | Explanation |
+| :-: | :-- |
+| visibility | Represents which kinds of models and tasks this configuration applies to. Possible values are:<br>**acoustic** - This configuration applies to the acoustic model and task.<br>**variance** - This configuration applies to the variance model and task. |
+| scope | The scope of the configuration's effects, indicating what it can influence within the whole pipeline. Possible values are:<br>**nn** - This configuration determines the presence or shapes of parameters and persistent buffers of the neural networks. Modifying it will result in failure when loading or resuming from checkpoints. Configurations that are read at model construction but do **not** change any saved key or shape are not **nn**.<br>**preprocessing** - This configuration controls how raw data pieces or inference inputs are converted to inputs of neural networks. Binarizers should be re-run if this configuration is modified.<br>**training** - This configuration describes the training procedures. Most training configurations can affect training performance, memory consumption, device utilization and loss calculation. Modifying training-only configurations will not cause severe inconsistency or errors in most situations.<br>**inference** - This configuration describes the calculation logic through the model graph. Changing it can lead to inconsistent or wrong outputs of inference or validation. |
+| customizability | The level of customizability of the configuration. Possible values are:<br>**required** - This configuration **must** be set or modified according to the actual situation or condition, otherwise errors can be raised.<br>**recommended** - It is recommended to adjust this configuration according to the dataset, requirements, environment and hardware. Most functionality-related and feature-related configurations are at this level, and all configurations at this level are widely tested with different values. However, leaving it unchanged will not cause problems.<br>**normal** - There is no need to modify it as the default value is carefully tuned and widely validated. However, one can still use another value if there are some special requirements or situations.<br>**not recommended** - No values other than the default one are tested for this configuration. Modifying it will not cause errors, but may cause unpredictable or significant impacts on the pipelines.<br>**reserved** - This configuration **must not** be modified. It appears in the configuration file only for future scalability, and currently changing it will result in errors. |
+| type | Value type of the configuration. Follows the syntax of Python type hints. Optional omission and fallback behavior are stated in the field description, while explicit `null` is included in the type only when it is accepted. |
+| default | Default value of the configuration. Uses YAML value syntax. |
+| constraints | Value constraints of the configuration. |
+
+### accumulate_grad_batches
+
+Indicates how many training steps' gradients are accumulated before each `optimizer.step()` call. 1 means no gradient accumulation.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic, variance</td>
+<tr><td align="center"><b>scope</b></td><td>training</td>
+<tr><td align="center"><b>customizability</b></td><td>recommended</td>
+<tr><td align="center"><b>type</b></td><td>int</td>
+<tr><td align="center"><b>default</b></td><td>1</td>
+</tbody></table>
+
+### audio_num_mel_bins
+
+Number of mel channels for the mel-spectrogram.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b></td><td>nn, preprocessing, inference</td>
+<tr><td align="center"><b>customizability</b></td><td>reserved</td>
+<tr><td align="center"><b>type</b></td><td>int</td>
+<tr><td align="center"><b>default</b></td><td>128</td>
+</tbody></table>
+
+### audio_sample_rate
+
+Sampling rate of waveforms.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic, variance</td>
+<tr><td align="center"><b>scope</b></td><td>preprocessing, inference</td>
+<tr><td align="center"><b>customizability</b></td><td>reserved</td>
+<tr><td align="center"><b>type</b></td><td>int</td>
+<tr><td align="center"><b>default</b></td><td>44100</td>
+</tbody></table>
+
+### augmentation_args
+
+Arguments for data augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>type</b></td><td>dict[str, Any]</td>
+</tbody></table>
+
+### augmentation_args.fixed_pitch_shifting
+
+Arguments for fixed pitch shifting augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>type</b></td><td>dict[str, Any]</td>
+</tbody></table>
+
+### augmentation_args.fixed_pitch_shifting.enabled
+
+Whether to apply fixed pitch shifting augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b></td><td>preprocessing</td>
+<tr><td align="center"><b>customizability</b></td><td>recommended</td>
+<tr><td align="center"><b>type</b></td><td>bool</td>
+<tr><td align="center"><b>default</b></td><td>false</td>
+<tr><td align="center"><b>constraints</b></td><td>Must be false if <a href="#augmentation_argsrandom_pitch_shiftingenabled">augmentation_args.random_pitch_shifting.enabled</a> is set to true. Enabling it requires <a href="#use_spk_id">use_spk_id</a> to be true, and <a href="#num_spk">num_spk</a> &ge; (1 + number of targets) &times; (max <a href="#datasetsspk_id">spk_id</a> + 1).</td>
+</tbody></table>
+
+### augmentation_args.fixed_pitch_shifting.scale
+
+Scale ratio of each target in fixed pitch shifting augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b></td><td>preprocessing</td>
+<tr><td align="center"><b>customizability</b></td><td>recommended</td>
+<tr><td align="center"><b>type</b></td><td>float</td>
+<tr><td align="center"><b>default</b></td><td>0.5</td>
+<tr><td align="center"><b>constraints</b></td><td>Must be smaller than 1.</td>
+</tbody></table>
+
+### augmentation_args.fixed_pitch_shifting.targets
+
+Targets (in semitones) of fixed pitch shifting augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b></td><td>preprocessing</td>
+<tr><td align="center"><b>customizability</b></td><td>not recommended</td>
+<tr><td align="center"><b>type</b></td><td>list[float]</td>
+<tr><td align="center"><b>default</b></td><td>[-5.0, 5.0]</td>
+<tr><td align="center"><b>constraints</b></td><td>Must not contain duplicate values.</td>
+</tbody></table>
+
+### augmentation_args.random_pitch_shifting
+
+Arguments for random pitch shifting augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>type</b></td><td>dict[str, Any]</td>
+</tbody></table>
+
+### augmentation_args.random_pitch_shifting.enabled
+
+Whether to apply random pitch shifting augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b></td><td>preprocessing</td>
+<tr><td align="center"><b>customizability</b></td><td>recommended</td>
+<tr><td align="center"><b>type</b></td><td>bool</td>
+<tr><td align="center"><b>default</b></td><td>false</td>
+<tr><td align="center"><b>constraints</b></td><td>Must be false if <a href="#augmentation_argsfixed_pitch_shiftingenabled">augmentation_args.fixed_pitch_shifting.enabled</a> is set to true. Enabling it requires <a href="#use_key_shift_embed">use_key_shift_embed</a> to be true.</td>
+</tbody></table>
+
+### augmentation_args.random_pitch_shifting.range
+
+Range of the random pitch shifting (in semitones). Besides being the augmentation sampling range, this value also calibrates the `gender` parameter at inference and ONNX export time: positive gender values are scaled by `max`, negative ones by the absolute value of `min`, and the resulting key shift of a *dynamic* (curve) gender value is clipped to this range. At Python inference time, a *static* scalar gender value is scaled the same way but **not** clipped, so values with absolute magnitude larger than 1 can produce key shifts outside this range; at ONNX export time, however, a static (frozen) gender value **is** clipped to this range, and exported graphs also clip the gender input to [-1, 1] before scaling, so the key shift always stays within this range. Do not modify it after preprocessing or training, otherwise inference behavior becomes inconsistent with the training data. An error is raised at inference or export time if [use_key_shift_embed](#use_key_shift_embed) is `true` while this key is missing from the configuration.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b></td><td>preprocessing, inference</td>
+<tr><td align="center"><b>customizability</b></td><td>not recommended</td>
+<tr><td align="center"><b>type</b></td><td>list[float]</td>
+<tr><td align="center"><b>default</b></td><td>[-5.0, 5.0]</td>
+<tr><td align="center"><b>constraints</b></td><td>Must satisfy min &lt; 0 &lt; max.</td>
+</tbody></table>
+
+### augmentation_args.random_pitch_shifting.scale
+
+Scale ratio of the random pitch shifting augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b></td><td>preprocessing</td>
+<tr><td align="center"><b>customizability</b></td><td>recommended</td>
+<tr><td align="center"><b>type</b></td><td>float</td>
+<tr><td align="center"><b>default</b></td><td>0.75</td>
+</tbody></table>
+
+### augmentation_args.random_time_stretching
+
+Arguments for random time stretching augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>type</b></td><td>dict[str, Any]</td>
+</tbody></table>
+
+### augmentation_args.random_time_stretching.enabled
+
+Whether to apply random time stretching augmentation.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b></td><td>preprocessing</td>
+<tr><td align="center"><b>customizability</b></td><td>recommended</td>
+<tr><td align="center"><b>type</b></td><td>bool</td>
+<tr><td align="center"><b>default</b></td><td>false</td>
+<tr><td align="center"><b>constraints</b></td><td>Enabling it requires <a href="#use_speed_embed">use_speed_embed</a> to be true.</td>
+</tbody></table>
+
+### augmentation_args.random_time_stretching.range
+
+Range of random time stretching factors. Besides being the augmentation sampling range, this value is also read at inference and ONNX export time as the clipping bounds of the `velocity` parameter curve before it is embedded. Do not modify it after preprocessing or training, otherwise inference behavior becomes inconsistent with the training data. At ONNX export time an error is raised if [use_speed_embed](#use_speed_embed) is `true` while this key is missing from the configuration; at inference time the key is only read when the input data actually provides a `velocity` parameter curve — if no velocity curve is given, speed silently defaults to 1.0 and the key is not accessed at all (unlike the pitch shifting range, which is read unconditionally at inference).
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b
+
+======================================================================
+FILE: basics/base_binarizer.py
+======================================================================
+import json
+import pathlib
+import pickle
+import shutil
+import warnings
+from copy import deepcopy
+
+import numpy as np
+import torch
+from tqdm import tqdm
+
+from utils.hparams import hparams
+from utils.indexed_datasets import IndexedDatasetBuilder
+from utils.multiprocess_utils import chunked_multiprocess_run
+from utils.phoneme_utils import load_phoneme_dictionary
+from utils.plot import distribution_to_figure
+
+
+class BinarizationError(Exception):
+    pass
+
+
+class BaseBinarizer:
+    """
+        Base class for data processing.
+        1. *process* and *process_data_split*:
+            process entire data, generate the train-test split (support parallel processing);
+        2. *process_item*:
+            process singe piece of data;
+        3. *get_pitch*:
+            infer the pitch using some algorithm;
+        4. *get_align*:
+            get the alignment using 'mel2ph' format (see https://arxiv.org/abs/1905.09263).
+        5. phoneme encoder, voice encoder, etc.
+
+        Subclasses should define:
+        1. *load_metadata*:
+            how to read multiple datasets from files;
+        2. *train_item_names*, *valid_item_names*, *test_item_names*:
+            how to split the dataset;
+        3. load_ph_set:
+            the phoneme set.
+    """
+
+    def __init__(self, datasets=None, data_attrs=None):
+        if datasets is None:
+            datasets = hparams['datasets']
+        self.datasets = datasets
+        self.raw_data_dirs = [pathlib.Path(ds['raw_data_dir']) for ds in self.datasets]
+        self.binary_data_dir = pathlib.Path(hparams['binary_data_dir'])
+        self.data_attrs = [] if data_attrs is None else data_attrs
+
+        self.binarization_args = hparams['binarization_args']
+        self.augmentation_args = hparams.get('augmentation_args', {})
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        self.spk_map = {}
+        self.spk_ids = None
+        self.build_spk_map()
+
+        self.lang_map = {}
+        self.dictionaries = hparams['dictionaries']
+        self.build_lang_map()
+
+        self.items = {}
+        self.item_names: list = None
+        self._train_item_names: list = None
+        self._valid_item_names: list = None
+
+        self.phoneme_dictionary = load_phoneme_dictionary()
+        self.timestep = hparams['hop_size'] / hparams['audio_sample_rate']
+
+    def build_spk_map(self):
+        spk_ids = [ds.get('spk_id') for ds in self.datasets]
+        assigned_spk_ids = {spk_id for spk_id in spk_ids if spk_id is not None}
+        idx = 0
+        for i in range(len(spk_ids)):
+            if spk_ids[i] is not None:
+                continue
+            while idx in assigned_spk_ids:
+                idx += 1
+            spk_ids[i] = idx
+            assigned_spk_ids.add(idx)
+        assert max(spk_ids) < hparams['num_spk'], \
+            f'Index in spk_id sequence {spk_ids} is out of range. All values should be smaller than num_spk.'
+
+        for spk_id, dataset in zip(spk_ids, self.datasets):
+            spk_name = dataset['speaker']
+            if spk_name in self.spk_map and self.spk_map[spk_name] != spk_id:
+                raise ValueError(f'Invalid speaker ID assignment. Name \'{spk_name}\' is assigned '
+                                 f'with different speaker IDs: {self.spk_map[spk_name]} and {spk_id}.')
+            self.spk_map[spk_name] = spk_id
+        self.spk_ids = spk_ids
+
+        print("| spk_map: ", self.spk_map)
+
+    def build_lang_map(self):
+        assert len(self.dictionaries.keys()) <= hparams['num_lang'], \
+            'Number of languages must not be greater than num_lang!'
+        for dataset in self.datasets:
+            assert dataset['language'] in self.dictionaries, f'Unrecognized language name: {dataset["language"]}'
+
+        for lang_id, lang_name in enumerate(sorted(self.dictionaries.keys()), start=1):
+            self.lang_map[lang_name] = lang_id
+
+        print("| lang_map: ", self.lang_map)
+
+    def load_meta_data(self, raw_data_dir: pathlib.Path, ds_id, spk, lang) -> dict:
+        raise NotImplementedError()
+
+    def split_train_valid_set(self, prefixes: list):
+        """
+        Split the dataset into training set and validation set.
+        :return: train_item_names, valid_item_names
+        """
+        prefixes = {str(pr): 1 for pr in prefixes}
+        valid_item_names = {}
+        # Add prefixes that specified speaker index and matches exactly item name to test set
+        for prefix in deepcopy(prefixes):
+            if prefix in self.item_names:
+                valid_item_names[prefix] = 1
+                prefixes.pop(prefix)
+        # Add names with one of the remaining prefixes to test set
+        for prefix in deepcopy(prefixes):
+            matched = False
+            for name in self.item_names:
+                if name.startswith(prefix):
+                    valid_item_names[name] = 1
+                    matched = True
+            if matched:
+                prefixes.pop(prefix)
+        if len(prefixes) != 0:
+            warnings.warn(
+                f'The following rules in test_prefixes have no matching names in the dataset: {", ".join(prefixes.keys())}',
+                category=UserWarning
+            )
+            warnings.filterwarnings('default')
+
+        valid_item_names = list(valid_item_names.keys())
+        assert len(valid_item_names) > 0, 'Validation set is empty!'
+        train_item_names = [x for x in self.item_names if x not in set(valid_item_names)]
+        assert len(train_item_names) > 0, 'Training set is empty!'
+
+        return train_item_names, valid_item_names
+
+    @property
+    def train_item_names(self):
+        return self._train_item_names
+
+    @property
+    def valid_item_names(self):
+        return self._valid_item_names
+
+    def meta_data_iterator(self, prefix):
+        if prefix == 'train':
+            item_names = self.train_item_names
+        else:
+            item_names = self.valid_item_names
+        for item_name in item_names:
+            meta_data = self.items[item_name]
+            yield item_name, meta_data
+
+    def process(self):
+        # load each dataset
+        test_prefixes = []
+        for ds_id, dataset in enumerate(self.datasets):
+            items = self.load_meta_data(
+                pathlib.Path(dataset['raw_data_dir']),
+                ds_id=ds_id, spk=dataset['speaker'], lang=dataset['language']
+            )
+            self.items.update(items)
+            test_prefixes.extend(
+                f'{ds_id}:{prefix}'
+                for prefix in dataset.get('test_prefixes', [])
+            )
+        self.item_names = sorted(list(self.items.keys()))
+        self._train_item_names, self._valid_item_names = self.split_train_valid_set(test_prefixes)
+
+        self.binary_data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy spk_map, lang_map and dictionary to binary data dir
+        spk_map_fn = self.binary_data_dir / 'spk_map.json'
+        with open(spk_map_fn, 'w', encoding='utf-8') as f:
+            json.dump(self.spk_map, f, ensure_ascii=False)
+        lang_map_fn = self.binary_data_dir / 'lang_map.json'
+        with open(lang_map_fn, 'w', encoding='utf-8') as f:
+            json.dump(self.lang_map, f, ensure_ascii=False)
+        for lang, dict_path in hparams['dictionaries'].items():
+            shutil.copy(dict_path, self.binary_data_dir / f'dictionary-{lang}.txt')
+        self.check_coverage()
+
+        # Process valid set and train set
+        try:
+            self.process_dataset('valid')
+            self.process_dataset(
+                'train',
+                num_workers=int(self.binarization_args['num_workers']),
+                apply_augmentation=any(args['enabled'] for args in self.augmentation_args.values())
+            )
+        except KeyboardInterrupt:
+            exit(-1)
+
+    def check_coverage(self):
+        # Group by phonemes in the dictionary.
+        ph_idx_required = set(range(1, len(self.phoneme_dictionary)))
+        ph_idx_occurred = set()
+        ph_idx_count_map = {
+            idx: 0
+            for idx in ph_idx_required
+        }
+
+        # Load and count those phones that appear in the actual data
+        for item_name in self.items:
+            ph_idx_occurred.update(self.items[item_name]['ph_seq'])
+            for idx in self.items[item_name]['ph_seq']:
+                ph_idx_count_map[idx] += 1
+        ph_count_map = {
+            self.phoneme_dictionary.decode_one(idx, scalar=False): count
+            for idx, count in ph_idx_count_map.items()
+        }
+
+        def display_phoneme(phoneme):
+            if isinstance(phoneme, tuple):
+                return f'({", ".join(phoneme)})'
+            return phoneme
+
+        print('===== Phoneme Distribution Summary =====')
+        keys = sorted(ph_count_map.keys(), key=lambda v: v[0] if isinstance(v, tuple) else v)
+        for i, key in enumerate(keys):
+            if i == len(ph_count_map) - 1:
+                end = '\n'
+            elif i % 10 == 9:
+                end = ',\n'
+            else:
+                end = ', '
+            key_disp = display_phoneme(key)
+            print(f'{key_disp}: {ph_count_map[key]}', end=end)
+
+        # Draw graph.
+        xs = [display_phoneme(k) for k in keys]
+        ys = [ph_count_map[k] for k in keys]
+        plt = distribution_to_figure(
+            title='Phoneme Distribution Summary',
+            x_label='Phoneme', y_label='Number of occurrences',
+            items=xs, values=ys, rotate=len(self.dictionaries) > 1
+        )
+        filename = self.binary_data_dir / 'phoneme_distribution.jpg'
+        plt.savefig(fname=filename,
+                    bbox_inches='tight',
+                    pad_inches=0.25)
+        print(f'| save summary to \'{filename}\'')
+
+        # Check unrecognizable or missing phonemes
+        if ph_idx_occurred != ph_idx_required:
+            missing_phones = sorted({
+                self.phoneme_dictionary.decode_one(idx, scalar=False)
+                for idx in ph_idx_required.difference(ph_idx_occurred)
+            }, key=lambda v: v[0] if isinstance(v, tuple) else v)
+            raise BinarizationError(
+                f'The following phonemes are not covered in transcriptions: {missing_phones}'
+            )
+
+    def process_dataset(self, prefix, num_workers=0, apply_augmentation=False):
+        args = []
+        builder = IndexedDatasetBuilder(self.binary_data_dir, prefix=prefix, allowed_attr=self.data_attrs)
+        total_sec = {k: 0.0 for k in self.spk_map}
+        total_raw_sec = {k: 0.0 for k in self.spk_map}
+        extra_info = {'names': {}, 'ph_texts': {}, 'spk_ids': {}, 'spk_names': {}, 'lengths': {}}
+        max_no = -1
+
+        for item_name, meta_data in self.meta_data_iterator(prefix):
+            args.append([item_name, meta_data, self.binarization_args])
+
+        aug_map = self.arrange_data_augmentation(self.meta_data_iterator(prefix)) if apply_augmentation else {}
+
+        def postprocess(_item):
+            nonlocal total_sec, total_raw_sec, extra_info, max_no
+            if _item is None:
+                return
+            item_no = builder.add_item(_item)
+            max_no = max(max_no, item_no)
+            for k, v in _item.items():
+                if isinstance(v, np.ndarray):
+                    if k not in extra_info:
+                        extra_info[k] = {}
+                    extra_info[k][item_no] = v.shape[0]
+            extra_info['names'][item_no] = _item['name'].split(':', 1)[-1]
+            extra_info['ph_texts'][item_no] = _item['ph_text']
+            extra_info['spk_ids'][item_no] = _item['spk_id']
+            extra_info['spk_names'][item_no] = _item['spk_name']
+            extra_info['lengths'][item_no] = _item['length']
+            total_raw_sec[_item['spk_name']] += _item['seconds']
+            total_sec[_item['spk_name']] += _item['seconds']
+
+            for task in aug_map.get(_item['name'], []):
+                aug_item = task['func'](_item, **task['kwargs'])
+                aug_item_no = builder.add_item(aug_item)
+                max_no = max(max_no, aug_item_no)
+                for k, v in aug_item.items():
+                    if isinstance(v, np.ndarray):
+                        if k not in extra_info:
+                            extra_info[k] = {}
+                        extra_info[k][aug_item_no] = v.shape[0]
+                extra_info['names'][aug_item_no] = aug_item['name'].split(':', 1)[-1]
+                extra_info['ph_texts'][aug_item_no] = aug_item['ph_text']
+                extra_info['spk_ids'][aug_item_no] = aug_item['spk_id']
+                extra_info['spk_names'][aug_item_no] = aug_item['spk_name']
+                extra_info['lengths'][aug_item_no] = aug_item['length']
+                total_sec[aug_item['spk_name']] += aug_item['seconds']
+
+        try:
+            if num_workers > 0:
+                # code for parallel processing
+                for item in tqdm(
+                        chunked_multiprocess_run(self.process_item, args, num_workers=num_workers),
+                        total=len(list(self.meta_data_iterator(prefix)))
+                ):
+                    postprocess(item)
+            else:
+                # code for single cpu processing
+                for a in tqdm(args):
+                    item = self.process_item(*a)
+                    postprocess(item)
+            for k in extra_info:
+                assert set(extra_info[k]) == set(range(max_no + 1)), f'Item numbering is not consecutive.'
+                extra_info[k] = list(map(lambda x: x[1], sorted(extra_info[k].items(), key=lambda x: x[0])))
+        except KeyboardInterrupt:
+            builder.finalize()
+            raise
+
+        builder.finalize()
+        if prefix == "train":
+            extra_info.pop("names")
+            extra_info.pop('ph_texts')
+            extra_info.pop("spk_names")
+        with open(self.binary_data_dir / f"{prefix}.meta", "wb") as f:
+            # noinspection PyTypeChecker
+            pickle.dump(extra_info, f)
+        if apply_augmentation:
+            print(f"| {prefix} tot
+
+======================================================================
+FILE: utils/phoneme_utils.py
+======================================================================
+import json
+import pathlib
+from typing import Dict, List, Union
+
+from utils.hparams import hparams
+
+PAD_INDEX = 0
+
+
+class PhonemeDictionary:
+    def __init__(
+            self,
+            dictionaries: Dict[str, pathlib.Path],
+            extra_phonemes: List[str] = None,
+            merged_groups: List[List[str]] = None
+    ):
+        # Step 1: Collect all phonemes
+        all_phonemes = {'AP', 'SP'}
+        if extra_phonemes:
+            for ph in extra_phonemes:
+                if '/' in ph:
+                    lang, name = ph.split('/', maxsplit=1)
+                    if lang not in dictionaries:
+                        raise ValueError(
+                            f"Invalid phoneme tag '{ph}' in extra phonemes: "
+                            f"unrecognized language name '{lang}'."
+                        )
+                    if name in all_phonemes:
+                        raise ValueError(
+                            f"Invalid phoneme tag '{ph}' in extra phonemes: "
+                            f"short name conflicts with existing tag."
+                        )
+                all_phonemes.add(ph)
+        self._multi_langs = len(dictionaries) > 1
+        for lang, dict_path in dictionaries.items():
+            with open(dict_path, 'r', encoding='utf8') as dict_file:
+                for line in dict_file:
+                    _, phonemes = line.strip().split('\t')
+                    phonemes = phonemes.split()
+                    for phoneme in phonemes:
+                        if '/' in phoneme:
+                            raise ValueError(
+                                f"Invalid phoneme tag '{phoneme}' in dictionary '{dict_path}': "
+                                f"should not contain the reserved character '/'."
+                            )
+                        if phoneme in all_phonemes:
+                            continue
+                        if self._multi_langs:
+                            all_phonemes.add(f'{lang}/{phoneme}')
+                        else:
+                            all_phonemes.add(phoneme)
+        # Step 2: Parse merged phoneme groups
+        if merged_groups is None:
+            merged_groups = []
+        else:
+            _merged_groups = []
+            for group in merged_groups:
+                _group = []
+                for phoneme in group:
+                    if '/' in phoneme:
+                        lang, name = phoneme.split('/', maxsplit=1)
+                        if lang not in dictionaries:
+                            raise ValueError(
+                                f"Invalid phoneme tag '{phoneme}' in merged group: "
+                                f"unrecognized language name '{lang}'."
+                            )
+                        if self._multi_langs:
+                            element = phoneme
+                        else:
+                            element = name
+                    else:
+                        element = phoneme
+                    if element not in all_phonemes:
+                        raise ValueError(
+                            f"Invalid phoneme tag '{phoneme}' in merged group: "
+                            f"not found in phoneme set."
+                        )
+                    _group.append(element)
+                _merged_groups.append(_group)
+            merged_groups = [set(phones) for phones in _merged_groups if len(phones) > 1]
+        # Step 3: Build phoneme index
+        # Union-find over phonemes: groups must merge transitively.
+        _uf_parent = {}
+
+        def _uf_find(p):
+            _uf_parent.setdefault(p, p)
+            while _uf_parent[p] != p:
+                _uf_parent[p] = _uf_parent[_uf_parent[p]]
+                p = _uf_parent[p]
+            return p
+
+        for group in merged_groups:
+            anchor = next(iter(group))
+            for phoneme in group:
+                _uf_parent[_uf_find(phoneme)] = _uf_find(anchor)
+
+        _uf_classes = {}
+        for group in merged_groups:
+            for phoneme in group:
+                root = _uf_find(phoneme)
+                if root not in _uf_classes:
+                    _uf_classes[root] = set()
+                _uf_classes[root].add(phoneme)
+        merged_groups = list(_uf_classes.values())
+        merged_phonemes_inverted_index = {
+            phoneme: group_idx
+            for group_idx, group in enumerate(merged_groups)
+            for phoneme in group
+        }
+        phone_to_id = {}
+        id_to_phone = []
+        cross_lingual_phonemes = set()
+        idx = 1
+        for phoneme in sorted(all_phonemes):
+            if phoneme in merged_phonemes_inverted_index:
+                has_assigned = True
+                for alias in merged_groups[merged_phonemes_inverted_index[phoneme]]:
+                    if alias not in phone_to_id:
+                        has_assigned = False
+                        phone_to_id[alias] = idx
+                if not has_assigned:
+                    merged_group = sorted(merged_groups[merged_phonemes_inverted_index[phoneme]])
+                    merged_from_langs = {
+                        (alias.split('/', maxsplit=1)[0] if '/' in alias else None)
+                        for alias in merged_group
+                    }
+                    id_to_phone.append(tuple(merged_group))
+                    idx += 1
+                    if len(merged_from_langs) > 1:
+                        cross_lingual_phonemes.update(ph for ph in merged_group if '/' in ph)
+            else:
+                phone_to_id[phoneme] = idx
+                id_to_phone.append(phoneme)
+                idx += 1
+        self._phone_to_id: Dict[str, int] = phone_to_id
+        self._id_to_phone: List[Union[str, tuple]] = id_to_phone
+        self._cross_lingual_phonemes = frozenset(cross_lingual_phonemes)
+
+    @property
+    def vocab_size(self):
+        return len(self._id_to_phone) + 1
+
+    def __len__(self):
+        return self.vocab_size
+
+    @property
+    def cross_lingual_phonemes(self):
+        return self._cross_lingual_phonemes
+
+    def is_cross_lingual(self, phone):
+        return phone in self._cross_lingual_phonemes
+
+    def encode_one(self, phone, lang=None):
+        if '/' in phone:
+            lang, phone = phone.split('/', maxsplit=1)
+        if lang is None or not self._multi_langs or phone in self._phone_to_id:
+            return self._phone_to_id[phone]
+        if '/' not in phone:
+            phone = f'{lang}/{phone}'
+        return self._phone_to_id[phone]
+
+    def encode(self, sentence, lang=None):
+        phones = sentence.strip().split() if isinstance(sentence, str) else sentence
+        return [self.encode_one(phone, lang=lang) for phone in phones]
+
+    def decode_one(self, idx, lang=None, scalar=True):
+        if idx <= 0:
+            return None
+        phone = self._id_to_phone[idx - 1]
+        if not scalar or isinstance(phone, str):
+            return phone
+        if lang is None or not self._multi_langs:
+            return phone[0]
+        for alias in phone:
+            if alias.startswith(f'{lang}/'):
+                return alias
+        return phone[0]
+
+    def decode(self, ids, lang=None, scalar=True):
+        ids = list(ids)
+        return ' '.join([
+            self.decode_one(i, lang=lang, scalar=scalar)
+            for i in ids
+            if i >= 1
+        ])
+
+    def dump(self, filename):
+        with open(filename, 'w', encoding='utf8') as fp:
+            json.dump(self._phone_to_id, fp, ensure_ascii=False, indent=2)
+
+
+def load_phoneme_dictionary() -> PhonemeDictionary:
+    config_dicts = hparams.get('dictionaries')
+    if config_dicts is not None:
+        dicts = {}
+        for lang, config_dict_path in config_dicts.items():
+            dict_path = pathlib.Path(hparams['work_dir']) / f'dictionary-{lang}.txt'
+            if not dict_path.exists():
+                dict_path = pathlib.Path(config_dict_path)
+            if not dict_path.exists():
+                raise FileNotFoundError(
+                    f"Could not locate dictionary for language '{lang}'."
+                )
+            dicts[lang] = dict_path
+    else:
+        dict_path = pathlib.Path(hparams['work_dir']) / 'dictionary.txt'
+        if not dict_path.exists():
+            dict_path = pathlib.Path(hparams['dictionary'])
+        if not dict_path.exists():
+            raise FileNotFoundError(
+                f"Could not locate dictionary file."
+            )
+        dicts = {
+            'default': dict_path
+        }
+    return PhonemeDictionary(
+        dictionaries=dicts,
+        extra_phonemes=hparams.get('extra_phonemes'),
+        merged_groups=hparams.get('merged_phoneme_groups')
+    )
+
+
+======================================================================
+FILE: utils/hparams.py
+======================================================================
+import argparse
+import os
+import yaml
+
+try:
+    from lightning.pytorch.utilities.rank_zero import rank_zero_only
+except ModuleNotFoundError:
+    def rank_zero_only(f):
+        return f
+
+from utils.multiprocess_utils import is_main_process as mp_is_main_process
+global_print_hparams = True
+hparams = {}
+
+
+class Args:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            self.__setattr__(k, v)
+
+
+def override_config(old_config: dict, new_config: dict):
+    for k, v in new_config.items():
+        if isinstance(v, dict) and k in old_config:
+            override_config(old_config[k], new_config[k])
+        else:
+            old_config[k] = v
+
+
+def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, global_hparams=True):
+    """
+        Load hparams from multiple sources:
+        1. config chain (i.e. first load base_config, then load config);
+        2. if reset == True, load from the (auto-saved) complete config file ('config.yaml')
+           which contains all settings and do not rely on base_config;
+        3. load from argument --hparams or hparams_str, as temporary modification.
+    """
+    if config == '':
+        parser = argparse.ArgumentParser(description='neural music')
+        parser.add_argument('--config', type=str, default='',
+                            help='location of the data corpus')
+        parser.add_argument('--exp_name', type=str, default='', help='exp_name')
+        parser.add_argument('--hparams', type=str, default='',
+                            help='location of the data corpus')
+        parser.add_argument('--infer', action='store_true', help='infer')
+        parser.add_argument('--reset', action='store_true', help='reset hparams')
+        args, unknown = parser.parse_known_args()
+        
+        tmp_args_hparams = args.hparams.split(',') if args.hparams.strip() != '' else []
+        tmp_args_hparams.extend(hparams_str.split(',') if hparams_str.strip() != '' else [])
+        args.hparams = ','.join(tmp_args_hparams)
+    else:
+        args = Args(config=config, exp_name=exp_name, hparams=hparams_str,
+                    infer=False, reset=False)
+
+    args_work_dir = ''
+    if args.exp_name != '':
+        args.work_dir = args.exp_name
+        args_work_dir = os.path.join('checkpoints', args.work_dir)
+
+    config_chains = []
+    loaded_config = set()
+
+    def load_config(config_fn):  # deep first
+        with open(config_fn, encoding='utf-8') as f:
+            hparams_ = yaml.safe_load(f)
+        loaded_config.add(config_fn)
+        if 'base_config' in hparams_:
+            ret_hparams = {}
+            if not isinstance(hparams_['base_config'], list):
+                hparams_['base_config'] = [hparams_['base_config']]
+            for c in hparams_['base_config']:
+                if c not in loaded_config:
+                    if c.startswith('.'):
+                        c = f'{os.path.dirname(config_fn)}/{c}'
+                        c = os.path.normpath(c)
+                    override_config(ret_hparams, load_config(c))
+            override_config(ret_hparams, hparams_)
+        else:
+            ret_hparams = hparams_
+        config_chains.append(config_fn)
+        return ret_hparams
+
+    global hparams
+    assert args.config != '' or args_work_dir != '', 'Either config or exp name should be specified.'
+    saved_hparams = {}
+    ckpt_config_path = os.path.join(args_work_dir, 'config.yaml')
+    if args_work_dir != '' and os.path.exists(ckpt_config_path):
+        with open(ckpt_config_path, encoding='utf-8') as f:
+            saved_hparams.update(yaml.safe_load(f))
+
+    hparams_ = {}
+    if args.config != '':
+        hparams_.update(load_config(args.config))
+
+    if not args.reset:
+        hparams_.update(saved_hparams)
+    hparams_['work_dir'] = args_work_dir
+
+    if args.hparams != "":
+        for new_hparam in args.hparams.split(","):
+            if new_hparam.strip() == "":
+                continue
+            k, v = new_hparam.split("=")
+            if k not in hparams_:
+                hparams_[k] = eval(v)
+            if v in ['True', 'False'] or type(hparams_[k]) == bool:
+                hparams_[k] = eval(v)
+            else:
+                hparams_[k] = type(hparams_[k])(v)
+
+    @rank_zero_only
+    def dump_hparams():
+        if args_work_dir != '' and (not os.path.exists(ckpt_config_path) or args.reset) and not args.infer:
+            os.makedirs(hparams_['work_dir'], exist_ok=True)
+            if mp_is_main_process:
+                # Only the main process will save the config file
+                with open(ckpt_config_path, 'w', encoding='utf-8') as f:
+                    hparams_non_recursive = hparams_.copy()
+                    hparams_non_recursive['base_config'] = []
+                    yaml.safe_dump(hparams_non_recursive, f, allow_unicode=True, encoding='utf-8')
+    dump_hparams()
+
+    hparams_['infer'] = args.infer
+    if global_hparams:
+        hparams.clear()
+        hparams.update(hparams_)
+    
+    if hparams.get('exp_name') is None:
+        hparams['exp_name'] = args.exp_name
+    if hparams_.get('exp_name') is None:
+        hparams_['exp_name'] = args.exp_name
+    
+    @rank_zero_only
+    def print_out_hparams():
+        global global_print_hparams
+        if mp_is_main_process and print_hparams and global_print_hparams and global_hparams:
+            print('| Hparams chains: ', config_chains)
+            print('| Hparams: ')
+            for i, (k, v) in enumerate(sorted(hparams_.items())):
+                print(f"\033[0;33m{k}\033[0m: {v}, ", end="\n" if i % 5 == 4 else "")
+            print("")
+            global_print_hparams = False
+    print_out_hparams()
+    
+    return hparams_
+
+
+======================================================================
+FILE: modules/pe
+======================================================================
+
+--- modules/pe/__init__.py ---
+from functools import lru_cache
+
+import torch
+
+from basics.base_pe import BasePE
+
+from .pm import ParselmouthPE
+from .pw import HarvestPE
+from .rmvpe import RMVPE
+
+
+# Kept at module level instead of on the binarizer instances: pickling torch tensors to
+# worker processes goes through shared memory, which fails on Windows.
+@lru_cache(maxsize=2)
+def _get_pitch_extractor(pe: str, pe_ckpt: str, device: torch.device) -> BasePE:
+    """Build and cache the pitch extractor for the given configuration."""
+    if pe == 'parselmouth':
+        return ParselmouthPE()
+    elif pe == 'rmvpe':
+        return RMVPE(pe_ckpt, device=device)
+    elif pe == 'harvest':
+        return HarvestPE()
+    else:
+        raise ValueError(f" [x] Unknown f0 extractor: {pe}")
+
+
+def get_pitch_extractor(pe: str, pe_ckpt: str, device=None) -> BasePE:
+    """Resolve the device before looking up the cached pitch extractor."""
+    if pe != 'rmvpe':
+        device = 'cpu'
+    elif device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = torch.device(device)
+    if device.type == 'cuda' and device.index is None:
+        device = torch.device('cuda', torch.cuda.current_device())
+    return _get_pitch_extractor(pe, pe_ckpt, device)
+
+
+--- modules/pe/pm.py ---
+from basics.base_pe import BasePE
+from utils.binarizer_utils import get_pitch_parselmouth
+
+
+class ParselmouthPE(BasePE):
+    def get_pitch(
+            self,waveform, samplerate, length,
+            *, hop_size, f0_min=65, f0_max=1100,
+            speed=1, interp_uv=False
+    ):
+        return get_pitch_parselmouth(
+            waveform, samplerate=samplerate, length=length,
+            hop_size=hop_size, f0_min=f0_min, f0_max=f0_max,
+            speed=speed, interp_uv=interp_uv
+        )
+
+
+--- modules/pe/pw.py ---
+from basics.base_pe import BasePE
+import numpy as np
+import pyworld as pw
+from utils.pitch_utils import interp_f0
+
+
+class HarvestPE(BasePE):
+    def get_pitch(
+            self, waveform, samplerate, length,
+            *, hop_size, f0_min=65, f0_max=1100,
+            speed=1, interp_uv=False
+    ):
+        hop_size = int(np.round(hop_size * speed))
+        time_step = 1000 * hop_size / samplerate
+
+        f0, _ = pw.harvest(
+            waveform.astype(np.float64), samplerate,
+            f0_floor=f0_min, f0_ceil=f0_max, frame_period=time_step
+        )
+        f0 = f0.astype(np.float32)
+
+        if f0.size < length:
+            f0 = np.pad(f0, (0, length - f0.size))
+        f0 = f0[:length]
+        uv = f0 == 0
+
+        if interp_uv:
+            f0, uv = interp_f0(f0, uv)
+        return f0, uv
+
+
+--- modules/pe/rmvpe/__init__.py ---
+from .constants import *
+from .model import E2E0
+from .utils import to_local_average_f0, to_viterbi_f0
+from .inference import RMVPE
+from .spec import MelSpectrogram
+
+
+--- modules/pe/rmvpe/constants.py ---
+SAMPLE_RATE = 16000
+
+N_CLASS = 360
+
+N_MELS = 128
+MEL_FMIN = 30
+MEL_FMAX = 8000
+WINDOW_LENGTH = 1024
+CONST = 1997.3794084376191
+
+
+--- modules/pe/rmvpe/deepunet.py ---
+import torch
+import torch.nn as nn
+from .constants import N_MELS
+
+
+class ConvBlockRes(nn.Module):
+    def __init__(self, in_channels, out_channels, momentum=0.01):
+        super(ConvBlockRes, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels=in_channels,
+                      out_channels=out_channels,
+                      kernel_size=(3, 3),
+                      stride=(1, 1),
+                      padding=(1, 1),
+                      bias=False),
+            nn.BatchNorm2d(out_channels, momentum=momentum),
+            nn.ReLU(),
+
+            nn.Conv2d(in_channels=out_channels,
+                      out_channels=out_channels,
+                      kernel_size=(3, 3),
+                      stride=(1, 1),
+                      padding=(1, 1),
+                      bias=False),
+            nn.BatchNorm2d(out_channels, momentum=momentum),
+            nn.ReLU(),
+        )
+        if in_channels != out_channels:
+            self.shortcut = nn.Conv2d(in_channels, out_channels, (1, 1))
+            self.is_shortcut = True
+        else:
+            self.is_shortcut = False
+
+    def forward(self, x):
+        if self.is_shortcut:
+            return self.conv(x) + self.shortcut(x)
+        else:
+            return self.conv(x) + x
+
+
+class ResEncoderBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, n_blocks=1, momentum=0.01):
+        super(ResEncoderBlock, self).__init__()
+        self.n_blocks = n_blocks
+        self.conv = nn.ModuleList()
+        self.conv.append(ConvBlockRes(in_channels, out_channels, momentum))
+        for i in range(n_blocks - 1):
+            self.conv.append(ConvBlockRes(out_channels, out_channels, momentum))
+        self.kernel_size = kernel_size
+        if self.kernel_size is not None:
+            self.pool = nn.AvgPool2d(kernel_size=kernel_size)
+
+    def forward(self, x):
+        for i in range(self.n_blocks):
+            x = self.conv[i](x)
+        if self.kernel_size is not None:
+            return x, self.pool(x)
+        else:
+            return x
+
+
+class ResDecoderBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride, n_blocks=1, momentum=0.01):
+        super(ResDecoderBlock, self).__init__()
+        out_padding = (0, 1) if stride == (1, 2) else (1, 1)
+        self.n_blocks = n_blocks
+        self.conv1 = nn.Sequential(
+            nn.ConvTranspose2d(in_channels=in_channels,
+                               out_channels=out_channels,
+                               kernel_size=(3, 3),
+                               stride=stride,
+                               padding=(1, 1),
+                               output_padding=out_padding,
+                               bias=False),
+            nn.BatchNorm2d(out_channels, momentum=momentum),
+            nn.ReLU(),
+        )
+        self.conv2 = nn.ModuleList()
+        self.conv2.append(ConvBlockRes(out_channels * 2, out_channels, momentum))
+        for i in range(n_blocks-1):
+            self.conv2.append(ConvBlockRes(out_channels, out_channels, momentum))
+
+    def forward(self, x, concat_tensor):
+        x = self.conv1(x)
+        x = torch.cat((x, concat_tensor), dim=1)
+        for i in range(self.n_blocks):
+            x = self.conv2[i](x)
+        return x
+
+
+class Encoder(nn.Module):
+    def __init__(self, in_channels, in_size, n_encoders, kernel_size, n_blocks, out_channels=16, momentum=0.01):
+        super(Encoder, self).__init__()
+        self.n_encoders = n_encoders
+        self.bn = nn.BatchNorm2d(in_channels, momentum=momentum)
+        self.layers = nn.ModuleList()
+        self.latent_channels = []
+        for i in range(self.n_encoders):
+            self.layers.append(ResEncoderBlock(in_channels, out_channels, kernel_size, n_blocks, momentum=momentum))
+            self.latent_channels.append([out_channels, in_size])
+            in_channels = out_channels
+            out_channels *= 2
+            in_size //= 2
+        self.out_size = in_size
+        self.out_channel = out_channels
+
+    def forward(self, x):
+        concat_tensors = []
+        x = self.bn(x)
+        for i in range(self.n_encoders):
+            _, x = self.layers[i](x)
+            concat_tensors.append(_)
+        return x, concat_tensors
+
+
+class Intermediate(nn.Module):
+    def __init__(self, in_channels, out_channels, n_inters, n_blocks, momentum=0.01):
+        super(Intermediate, self).__init__()
+        self.n_inters = n_inters
+        self.layers = nn.ModuleList()
+        self.layers.append(ResEncoderBlock(in_channels, out_channels, None, n_blocks, momentum))
+        for i in range(self.n_inters-1):
+            self.layers.append(ResEncoderBlock(out_channels, out_channels, None, n_blocks, momentum))
+
+    def forward(self, x):
+        for i in range(self.n_inters):
+            x = self.layers[i](x)
+        return x
+
+
+class Decoder(nn.Module):
+    def __init__(self, in_channels, n_decoders, stride, n_blocks, momentum=0.01):
+        super(Decoder, self).__init__()
+        self.layers = nn.ModuleList()
+        self.n_decoders = n_decoders
+        for i in range(self.n_decoders):
+            out_channels = in_channels // 2
+            self.layers.append(ResDecoderBlock(in_channels, out_channels, stride, n_blocks, momentum))
+            in_channels = out_channels
+
+    def forward(self, x, concat_tensors):
+        for i in range(self.n_decoders):
+            x = self.layers[i](x, concat_tensors[-1-i])
+        return x
+
+
+class TimbreFilter(nn.Module):
+    def __init__(self, latent_rep_channels):
+        super(TimbreFilter, self).__init__()
+        self.layers = nn.ModuleList()
+        for latent_rep in latent_rep_channels:
+            self.layers.append(ConvBlockRes(latent_rep[0], latent_rep[0]))
+
+    def forward(self, x_tensors):
+        out_tensors = []
+        for i, layer in enumerate(self.layers):
+            out_tensors.append(layer(x_tensors[i]))
+        return out_tensors
+
+
+class DeepUnet0(nn.Module):
+    def __init__(self, kernel_size, n_blocks, en_de_layers=5, inter_layers=4, in_channels=1, en_out_channels=16):
+        super(DeepUnet0, self).__init__()
+        self.encoder = Encoder(in_channels, N_MELS, en_de_layers, kernel_size, n_blocks, en_out_channels)
+        self.intermediate = Intermediate(self.encoder.out_channel // 2, self.encoder.out_channel, inter_layers, n_blocks)
+        self.tf = TimbreFilter(self.encoder.latent_channels)
+        self.decoder = Decoder(self.encoder.out_channel, en_de_layers, kernel_size, n_blocks)
+
+    def forward(self, x):
+        x, concat_tensors = self.encoder(x)
+        x = self.intermediate(x)
+        x = self.decoder(x, concat_tensors)
+        return x
+
+
+--- modules/pe/rmvpe/inference.py ---
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torchaudio.transforms import Resample
+
+from basics.base_pe import BasePE
+from utils.infer_utils import resample_align_curve
+from utils.pitch_utils import interp_f0
+from .constants import *
+from .model import E2E0
+from .spec import MelSpectrogram
+from .utils import to_local_average_f0, to_viterbi_f0
+
+
+class RMVPE(BasePE):
+    def __init__(self, model_path, hop_length=160, *, device=None):
+        self.resample_kernel = {}
+        self.device = torch.device(
+            ('cuda' if torch.cuda.is_available() else 'cpu') if device is None else device
+        )
+        self.model = E2E0(4, 1, (2, 2)).eval().to(self.device)
+        ckpt = torch.load(model_path, map_location=self.device)
+        self.model.load_state_dict(ckpt['model'], strict=False)
+        self.hop_length = hop_length
+        self.seg_length = 32 * hop_length
+        self.mel_extractor = MelSpectrogram(
+            N_MELS, SAMPLE_RATE, WINDOW_LENGTH, hop_length, None, MEL_FMIN, MEL_FMAX
+        ).to(self.device)
+
+    @torch.no_grad()
+    def mel2hidden(self, mel):
+        n_frames = mel.shape[-1]
+        mel = F.pad(mel, (0, 32 * ((n_frames - 1) // 32 + 1) - n_frames), mode='reflect')
+        hidden = self.model(mel)
+        return hidden[:, :n_frames]
+
+    def decode(self, hidden, thred=0.03, use_viterbi=False):
+        if use_viterbi:
+            f0 = to_viterbi_f0(hidden, thred=thred)
+        else:
+            f0 = to_local_average_f0(hidden, thred=thred)
+        return f0
+
+    def infer_from_audio(self, audio, sample_rate=16000, thred=0.03, use_viterbi=False):
+        audio = torch.from_numpy(audio).float().unsqueeze(0).to(self.device)
+        if sample_rate == 16000:
+            audio_res = audio
+        else:
+            key_str = str(sample_rate)
+            if key_str not in self.resample_kernel:
+                self.resample_kernel[key_str] = Resample(sample_rate, 16000, lowpass_filter_width=128)
+            self.resample_kernel[key_str] = self.resample_kernel[key_str].to(self.device)
+            audio_res = self.resample_kernel[key_str](audio)
+        B, T = audio_res.shape
+        n_frames = T // self.hop_length + 1 
+        T1 = T + self.hop_length
+        T_pad = self.seg_length * ((T1 - 1) // self.seg_length + 1) - T1
+        audio_res = F.pad(audio_res, (0, T_pad))
+        mel = self.mel_extractor(audio_res, center=True)
+        with torch.no_grad():
+            hidden = self.model(mel)
+        f0 = self.decode(hidden[:, :n_frames], thred=thred, use_viterbi=use_viterbi)
+        return f0
+
+    def get_pitch(
+            self, waveform, samplerate, length,
+            *, hop_size, f0_min=65, f0_max=1100,
+            speed=1, interp_uv=False
+    ):
+        f0 = self.infer_from_audio(waveform, sample_rate=samplerate)
+        uv = f0 == 0
+        f0, uv = interp_f0(f0, uv)
+
+        hop_size = int(np.round(hop_size * speed))
+        time_step = hop_size / samplerate
+        f0_res = resample_align_curve(f0, 0.01, time_step, length)
+        uv_res = resample_align_curve(uv.astype(np.float32), 0.01, time_step, length) > 0.5
+        if not interp_uv:
+            f0_res[uv_res] = 0
+        return f0_res, uv_res
+
+
+--- modules/pe/rmvpe/model.py ---
+from torch import nn
+
+from .constants import *
+from .deepunet import DeepUnet0
+from .seq import BiGRU
+
+
+class E2E0(nn.Module):
+    def __init__(self, n_blocks, n_gru, kernel_size, en_de_layers=5, inter_layers=4, in_channels=1,
+                 en_out_channels=16):
+        super(E2E0, self).__init__()
+        self.unet = DeepUnet0(kernel_size, n_blocks, en_de_layers, inter_layers, in_channels, en_out_channels)
+        self.cnn = nn.Conv2d(en_out_channels, 3, (3, 3), padding=(1, 1))
+        if n_gru:
+            self.fc = nn.Sequential(
+                BiGRU(3 * N_MELS, 256, n_gru),
+                nn.Linear(512, N_CLASS),
+                nn.Dropout(0.25),
+                nn.Sigmoid()
+            )
+        else:
+            self.fc = nn.Sequential(
+                nn.Linear(3 * N_MELS, N_CLASS),
+                nn.Dropout(0.25),
+                nn.Sigmoid()
+            )
+
+    def forward(self, mel):
+        mel = mel.transpose(-1, -2).unsqueeze(1)
+        x = self.cnn(self.unet(mel)).transpose(1, 2).flatten(-2)
+        x = self.fc(x)
+        return x
+
+
+--- modules/pe/rmvpe/seq.py ---
+import torch.nn as nn
+
+
+class BiGRU(nn.Module):
+    def __init__(self, input_features, hidden_features, num_layers):
+        super(BiGRU, self).__init__()
+        self.gru = nn.GRU(input_features, hidden_features, num_layers=num_layers, batch_first=True, bidirectional=True)
+
+    def forward(self, x):
+        return self.gru(x)[0]
+
+
+--- modules/pe/rmvpe/spec.py ---
+import torch
+import numpy as np
+import torch.nn.functional as F
+from librosa.filters import mel
+
+
+class MelSpectrogram(torch.nn.Module):
+    def __init__(
+            self,
+            n_mel_channels,
+            sampling_rate,
+            win_length,
+            hop_length,
+            n_fft=None,
+            mel_fmin=0,
+            mel_fmax=None,
+            clamp=1e-5
+    ):
+        super().__init__()
+        n_fft = win_length if n_fft is None else n_fft
+        self.hann_window = {}
+        mel_basis = mel(
+            sr=sampling_rate,
+            n_fft=n_fft,
+            n_mels=n_mel_channels,
+            fmin=mel_fmin,
+            fmax=mel_fmax,
+            htk=True)
+        mel_basis = torch.from_numpy(mel_basis).float()
+        self.register_buffer("mel_basis", mel_basis)
+        self.n_fft = win_length if n_fft is None else n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length
+        self.sampling_rate = sampling_rate
+        self.n_mel_channels = n_mel_channels
+        self.clamp = clamp
+
+    def forward(self, audio, keyshift=0, speed=1, center=True):
+        factor = 2 ** (keyshift / 12)
+        n_fft_new = int(np.round(self.n_fft * factor))
+        win_length_new = int(np.round(self.win_length * factor))
+        hop_length_new = int(np.round(self.hop_length * speed))
+
+        keyshift_key = str(keyshift) + '_' + str(audio.device)
+        if keyshift_key not in self.hann_window:
+            self.hann_window[keyshift_key] = torch.hann_window(win_length_new).to(audio.device)
+
+        fft = torch.stft(
+            audio,
+            n_fft=n_fft_new,
+            hop_length=hop_length_new,
+            win_length=win_length_new,
+            window=self.hann_window[keyshift_key],
+            center=center,
+            return_complex=True
+        )
+        magnitude = fft.abs()
+
+        if keyshift != 0:
+            size = self.n_fft // 2 + 1
+            resize = magnitude.size(1)
+            if resize < size:
+                magnitude = F.pad(magnitude, (0, 0, 0, size - resize))
+            magnitude = magnitude[:, :size, :] * self.win_length / win_length_new
+
+        mel_output = torch.matmul(self.mel_basis, magnitude)
+        log_mel_spec = torch.log(torch.clamp(mel_output, min=self.clamp))
+        return log_mel_spec
+
+
+--- modules/pe/rmvpe/utils.py ---
+import librosa
+import numpy as np
+import torch
+
+from .constants import *
+
+
+def to_local_average_f0(hidden, center=None, thred=0.03):
+    idx = torch.arange(N_CLASS, device=hidden.device)[None, None, :]  # [B=1, T=1, N]
+    idx_cents = idx * 20 + CONST  # [B=1, N]
+    if center is None:
+        center = torch.argmax(hidden, dim=2, keepdim=True)  # [B, T, 1]
+    start = torch.clip(center - 4, min=0)  # [B, T, 1]
+    end = torch.clip(center + 5, max=N_CLASS)  # [B, T, 1]
+    idx_mask = (idx >= start) & (idx < end)  # [B, T, N]
+    weights = hidden * idx_mask  # [B, T, N]
+    product_sum = torch.sum(weights * idx_cents, dim=2)  # [B, T]
+    weight_sum = torch.sum(weights, dim=2)  # [B, T]
+    cents = product_sum / (weight_sum + (weight_sum == 0))  # avoid dividing by zero, [B, T]
+    f0 = 10 * 2 ** (cents / 1200)
+    uv = hidden.max(dim=2)[0] < thred  # [B, T]
+    f0 = f0 * ~uv
+    return f0.squeeze(0).cpu().numpy()
+
+
+def to_viterbi_f0(hidden, thred=0.03):
+    # Create viterbi transition matrix
+    if not hasattr(to_viterbi_f0, 'transition'):
+        xx, yy = np.meshgrid(range(N_CLASS), range(N_CLASS))
+        transition = np.maximum(30 - abs(xx - yy), 0)
+        transition = transition / transition.sum(axis=1, keepdims=True)
+        to_viterbi_f0.transition = transition
+
+    # Convert to probability
+    prob = hidden.squeeze(0).cpu().numpy()
+    prob = prob.T
+    prob = prob / prob.sum(axis=0)
+
+    # Perform viterbi decoding
+    path = librosa.sequence.viterbi(prob, to_viterbi_f0.transition).astype(np.int64)
+    center = torch.from_numpy(path).unsqueeze(0).unsqueeze(-1).to(hidden.device)
+
+    return to_local_average_f0(hidden, center=center, thred=thred)
+
+
+======================================================================
+FILE: modules/vocoders
+======================================================================
+
+--- modules/vocoders/__init__.py ---
+from modules.vocoders import ddsp
+from modules.vocoders import nsf_hifigan
+
+
+--- modules/vocoders/ddsp.py ---
+import pathlib
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+import yaml
+from librosa.filters import mel as librosa_mel_fn
+
+from basics.base_vocoder import BaseVocoder
+from modules.vocoders.registry import register_vocoder
+from utils.hparams import hparams
+
+
+class DotDict(dict):
+    def __getattr__(*args):
+        val = dict.get(*args)
+        return DotDict(val) if type(val) is dict else val
+
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+
+def load_model(model_path: pathlib.Path, device='cpu'):
+    config_file = model_path.with_name('config.yaml')
+    with open(config_file, "r") as config:
+        args = yaml.safe_load(config)
+    args = DotDict(args)
+
+    # load model
+    print(' [Loading] ' + str(model_path))
+    model = torch.jit.load(model_path, map_location=torch.device(device))
+    model.eval()
+
+    return model, args
+
+
+@register_vocoder
+class DDSP(BaseVocoder):
+    def __init__(self, device='cpu'):
+        self.device = device
+        model_path = pathlib.Path(hparams['vocoder_ckpt'])
+        assert model_path.exists(), 'DDSP model file is not found!'
+        self.model, self.args = load_model(model_path, device=self.device)
+
+    def to_device(self, device):
+        pass
+
+    def get_device(self):
+        return self.device
+
+    def spec2wav_torch(self, mel, f0):  # mel: [B, T, bins] f0: [B, T]
+        if self.args.data.sampling_rate != hparams['audio_sample_rate']:
+            print('Mismatch parameters: hparams[\'audio_sample_rate\']=', hparams['audio_sample_rate'], '!=',
+                  self.args.data.sampling_rate, '(vocoder)')
+        if self.args.data.n_mels != hparams['audio_num_mel_bins']:
+            print('Mismatch parameters: hparams[\'audio_num_mel_bins\']=', hparams['audio_num_mel_bins'], '!=',
+                  self.args.data.n_mels, '(vocoder)')
+        if self.args.data.n_fft != hparams['fft_size']:
+            print('Mismatch parameters: hparams[\'fft_size\']=', hparams['fft_size'], '!=', self.args.data.n_fft,
+                  '(vocoder)')
+        if self.args.data.win_length != hparams['win_size']:
+            print('Mismatch parameters: hparams[\'win_size\']=', hparams['win_size'], '!=', self.args.data.win_length,
+                  '(vocoder)')
+        if self.args.data.block_size != hparams['hop_size']:
+            print('Mismatch parameters: hparams[\'hop_size\']=', hparams['hop_size'], '!=', self.args.data.block_size,
+                  '(vocoder)')
+        if self.args.data.mel_fmin != hparams['fmin']:
+            print('Mismatch parameters: hparams[\'fmin\']=', hparams['fmin'], '!=', self.args.data.mel_fmin,
+                  '(vocoder)')
+        if self.args.data.mel_fmax != hparams['fmax']:
+            print('Mismatch parameters: hparams[\'fmax\']=', hparams['fmax'], '!=', self.args.data.mel_fmax,
+                  '(vocoder)')
+        with torch.no_grad():
+            mel = mel.to(self.device)
+            mel_base = hparams.get('mel_base', 10)
+            if mel_base != 'e':
+                assert mel_base in [10, '10'], "mel_base must be 'e', '10' or 10."
+            else:
+                # log mel to log10 mel
+                mel = 0.434294 * mel
+            f0 = f0.unsqueeze(-1).to(self.device)
+            signal, _, (s_h, s_n) = self.model(mel, f0)
+            signal = signal.view(-1)
+        return signal
+
+    def spec2wav(self, mel, f0):
+        if self.args.data.sampling_rate != hparams['audio_sample_rate']:
+            print('Mismatch parameters: hparams[\'audio_sample_rate\']=', hparams['audio_sample_rate'], '!=',
+                  self.args.data.sampling_rate, '(vocoder)')
+        if self.args.data.n_mels != hparams['audio_num_mel_bins']:
+            print('Mismatch parameters: hparams[\'audio_num_mel_bins\']=', hparams['audio_num_mel_bins'], '!=',
+                  self.args.data.n_mels, '(vocoder)')
+        if self.args.data.n_fft != hparams['fft_size']:
+            print('Mismatch parameters: hparams[\'fft_size\']=', hparams['fft_size'], '!=', self.args.data.n_fft,
+                  '(vocoder)')
+        if self.args.data.win_length != hparams['win_size']:
+            print('Mismatch parameters: hparams[\'win_size\']=', hparams['win_size'], '!=', self.args.data.win_length,
+                  '(vocoder)')
+        if self.args.data.block_size != hparams['hop_size']:
+            print('Mismatch parameters: hparams[\'hop_size\']=', hparams['hop_size'], '!=', self.args.data.block_size,
+                  '(vocoder)')
+        if self.args.data.mel_fmin != hparams['fmin']:
+            print('Mismatch parameters: hparams[\'fmin\']=', hparams['fmin'], '!=', self.args.data.mel_fmin,
+                  '(vocoder)')
+        if self.args.data.mel_fmax != hparams['fmax']:
+            print('Mismatch parameters: hparams[\'fmax\']=', hparams['fmax'], '!=', self.args.data.mel_fmax,
+                  '(vocoder)')
+        with torch.no_grad():
+            mel = torch.FloatTensor(mel).unsqueeze(0).to(self.device)
+            mel_base = hparams.get('mel_base', 10)
+            if mel_base != 'e':
+                assert mel_base in [10, '10'], "mel_base must be 'e', '10' or 10."
+            else:
+                # log mel to log10 mel
+                mel = 0.434294 * mel
+            f0 = torch.FloatTensor(f0).unsqueeze(0).unsqueeze(-1).to(self.device)
+            signal, _, (s_h, s_n) = self.model(mel, f0)
+            signal = signal.view(-1)
+        wav_out = signal.cpu().numpy()
+        return wav_out
+
+
+--- modules/vocoders/nsf_hifigan.py ---
+import pathlib
+
+import torch
+
+try:
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
+except ModuleNotFoundError:
+    rank_zero_info = print
+
+from modules.nsf_hifigan.models import load_model
+from basics.base_vocoder import BaseVocoder
+from modules.vocoders.registry import register_vocoder
+from utils.hparams import hparams
+
+
+@register_vocoder
+class NsfHifiGAN(BaseVocoder):
+    def __init__(self):
+        model_path = pathlib.Path(hparams['vocoder_ckpt'])
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f'NSF-HiFiGAN vocoder model is not found at \'{model_path}\'. '
+                'Please follow instructions in docs/BestPractices.md#vocoders to get one.'
+            )
+        rank_zero_info(f'| Load HifiGAN: {model_path}')
+        self.model, self.h = load_model(model_path)
+
+    @property
+    def device(self):
+        return next(self.model.parameters()).device
+
+    def to_device(self, device):
+        self.model.to(device)
+
+    def get_device(self):
+        return self.device
+
+    def spec2wav_torch(self, mel, **kwargs):  # mel: [B, T, bins]
+        if self.h.sampling_rate != hparams['audio_sample_rate']:
+            print('Mismatch parameters: hparams[\'audio_sample_rate\']=', hparams['audio_sample_rate'], '!=',
+                  self.h.sampling_rate, '(vocoder)')
+        if self.h.num_mels != hparams['audio_num_mel_bins']:
+            print('Mismatch parameters: hparams[\'audio_num_mel_bins\']=', hparams['audio_num_mel_bins'], '!=',
+                  self.h.num_mels, '(vocoder)')
+        if self.h.n_fft != hparams['fft_size']:
+            print('Mismatch parameters: hparams[\'fft_size\']=', hparams['fft_size'], '!=', self.h.n_fft, '(vocoder)')
+        if self.h.win_size != hparams['win_size']:
+            print('Mismatch parameters: hparams[\'win_size\']=', hparams['win_size'], '!=', self.h.win_size,
+                  '(vocoder)')
+        if self.h.hop_size != hparams['hop_size']:
+            print('Mismatch parameters: hparams[\'hop_size\']=', hparams['hop_size'], '!=', self.h.hop_size,
+                  '(vocoder)')
+        if self.h.fmin != hparams['fmin']:
+            print('Mismatch parameters: hparams[\'fmin\']=', hparams['fmin'], '!=', self.h.fmin, '(vocoder)')
+        if self.h.fmax != hparams['fmax']:
+            print('Mismatch parameters: hparams[\'fmax\']=', hparams['fmax'], '!=', self.h.fmax, '(vocoder)')
+        with torch.no_grad():
+            c = mel.transpose(2, 1)  # [B, T, bins]
+            mel_base = hparams.get('mel_base', 10)
+            if mel_base != 'e':
+                assert mel_base in [10, '10'], "mel_base must be 'e', '10' or 10."
+                # log10 to log mel
+                c = 2.30259 * c
+            f0 = kwargs.get('f0')  # [B, T]
+            if f0 is not None:
+                y = self.model(c, f0).view(-1)
+            else:
+                y = self.model(c).view(-1)
+        return y
+
+    def spec2wav(self, mel, **kwargs):
+        if self.h.sampling_rate != hparams['audio_sample_rate']:
+            print('Mismatch parameters: hparams[\'audio_sample_rate\']=', hparams['audio_sample_rate'], '!=',
+                  self.h.sampling_rate, '(vocoder)')
+        if self.h.num_mels != hparams['audio_num_mel_bins']:
+            print('Mismatch parameters: hparams[\'audio_num_mel_bins\']=', hparams['audio_num_mel_bins'], '!=',
+                  self.h.num_mels, '(vocoder)')
+        if self.h.n_fft != hparams['fft_size']:
+            print('Mismatch parameters: hparams[\'fft_size\']=', hparams['fft_size'], '!=', self.h.n_fft, '(vocoder)')
+        if self.h.win_size != hparams['win_size']:
+            print('Mismatch parameters: hparams[\'win_size\']=', hparams['win_size'], '!=', self.h.win_size,
+                  '(vocoder)')
+        if self.h.hop_size != hparams['hop_size']:
+            print('Mismatch parameters: hparams[\'hop_size\']=', hparams['hop_size'], '!=', self.h.hop_size,
+                  '(vocoder)')
+        if self.h.fmin != hparams['fmin']:
+            print('Mismatch parameters: hparams[\'fmin\']=', hparams['fmin'], '!=', self.h.fmin, '(vocoder)')
+        if self.h.fmax != hparams['fmax']:
+            print('Mismatch parameters: hparams[\'fmax\']=', hparams['fmax'], '!=', self.h.fmax, '(vocoder)')
+        with torch.no_grad():
+            c = torch.FloatTensor(mel).unsqueeze(0).transpose(2, 1).to(self.device)
+            mel_base = hparams.get('mel_base', 10)
+            if mel_base != 'e':
+                assert mel_base in [10, '10'], "mel_base must be 'e', '10' or 10."
+                # log10 to log mel
+                c = 2.30259 * c
+            f0 = kwargs.get('f0')
+            if f0 is not None:
+                f0 = torch.FloatTensor(f0[None, :]).to(self.device)
+                y = self.model(c, f0).view(-1)
+            else:
+                y = self.model(c).view(-1)
+        wav_out = y.cpu().numpy()
+        return wav_out
+
+
+--- modules/vocoders/registry.py ---
+import importlib
+
+
+VOCODERS = {}
+
+
+def register_vocoder(cls):
+    VOCODERS[cls.__name__.lower()] = cls
+    VOCODERS[cls.__name__] = cls
+    return cls
+
+
+def get_vocoder_cls(hparams):
+    if hparams['vocoder'] in VOCODERS:
+        return VOCODERS[hparams['vocoder']]
+    else:
+        vocoder_cls = hparams['vocoder']
+        pkg = ".".join(vocoder_cls.split(".")[:-1])
+        cls_name = vocoder_cls.split(".")[-1]
+        vocoder_cls = getattr(importlib.import_module(pkg), cls_name)
+        return vocoder_cls
+
